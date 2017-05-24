@@ -1,0 +1,263 @@
+!> \file platm/condinit.f90
+!! \brief
+!! \b DUMSES-Hybrid:
+!! This is the initial conditions subroutine for the baroclinic instability
+!! in a hot Jupiter atmosphere.
+!! \author
+!! Marc Joos <marc.joos@cea.fr>, Sébastien Fromang, Romain Teyssier, 
+!! Patrick Hennebelle
+!! \copyright
+!! Copyrights 2013-2015, CEA.
+!! This file is distributed under the CeCILL-A & GNU/GPL licenses, see
+!! <http://www.cecill.info/licences/Licence_CeCILL_V2.1-en.html> and
+!! <http://www.gnu.org/licenses/>
+!! \date
+!! \b created:          05-26-2015 
+!! \b last \b modified: 05-26-2015
+!<
+!===============================================================================
+!> setup the initial conditions for the baroclinic instability in a hot
+!> Jupiter atmosphere
+!===============================================================================
+subroutine condinit
+  use variables
+  use params
+  use atmosphere
+  use mpi_var
+  implicit none
+
+  real(dp) :: amp
+  namelist /init_params/ rho0,T0,amp,g,balanced,isentropic,cooling,drag,DT_EP,beta,t_rad,t_drag,perturb,eeq
+
+  integer  :: i,j,k,l,jfile,kfile,jglob,kglob
+  real(dp) :: rho,u,P
+  real(dp) :: pressure,H,Rp,K0,T0,gammam1,Tprime
+  real :: rvalue
+  logical :: perturb,eeq
+
+#if MPI==1
+  integer :: yposition_file,zposition_file
+#endif
+
+  ! Default input parameters
+  rho0=1.d0 ! in kg.m-3
+  T0=300.d0 ! in K (earth)
+  g=1.d1    ! in m.s-2
+  Rp=xmin   ! ==1
+  balanced=.false. ! balanced vs. unbalanced scheme
+  isentropic=.false. !isotherme vs. adiabatic atm structure
+  cooling=.false.
+  wave=0.d0 ! Wave amplitude (in the velocity, only relevant for isentropic case)
+  DT_EP=0.d0 !Amplitude of horizontal temperature difference due to radiative forcing
+  beta=0.d0 !Gradient of the Coriolis term
+  omegaEq=0.d0 !Absolute Coriolis parameter
+  drag=.false. !using Rayleigh drag?
+  t_drag=0.d0 ! Drag damping timescale
+  forcing=.false.    ! Matsuno-like forcing (1966)
+  perturb=.false. ! No baroclinic instability
+  eeq=.false. !EEQ jet vs. high latitude jet
+  
+  ! earth parameters
+  k_mumh=258.3 !for T=1K & mu=32 & mh=1.67e-27 kg & k in USI
+  rho0=1.d0 ! in kg.m-3
+  Rp=6371.e3    !in m
+  T0=300.d0 ! in K
+  g=1.d1    ! in m.s-2
+  H=k_mumh*T0/g !in m
+  P0=rho0*k_mumh*T0 !in Pa
+
+  ! shallow hot jupiter
+  k_mumh=3779 !for T=1K & mu=32 & mh=1.67e-27 kg & k in USI
+  rho0=1.5d-2 ! in kg.m-3
+  Rp=1.e8    !in m
+  T0=1800.d0 ! in K
+  g=8.d0    ! in m.s-2
+  H=k_mumh*T0/g !in m
+  P0=rho0*k_mumh*T0 !in Pa
+  Tsurf=1600 !in K
+  Dtrop=2.e-4 !in K.m-1
+  t_rad=2.d0*pi/2.1e-5*0.5 !in sec     
+
+  open(unit=1,file='input' ,status='old')
+  read(1,init_params)
+  close(1)
+
+  if (mype==0) then
+     write (*,*) 'sound speed (in m.s-1)=',sqrt(gamma*P0/rho0)
+     write (*,*) 'H (in km)=',H/1e3
+     write (*,*) 'P0 (in bars)=',P0/1.e5
+  endif
+
+  uin=0.d0
+  gammam1=gamma-1
+
+  ! Read data from input text file
+  open(unit=1,file='jet.txt',status='old')
+  do kglob=1,nzglob
+     do jglob=1,nyglob
+        read(1,*) jfile,kfile,rho,u,P
+        
+#if MPI==1
+        yposition_file=(jfile-1)/ny
+        zposition_file=(kfile-1)/nz
+        if ((yposition_file==yposition).and.(zposition_file==zposition)) then
+           j=mod(jfile,ny) ; if (j==0) j=ny
+           k=mod(kfile,nz) ; if (k==0) k=nz
+#else
+           j=jfile ; k=kfile
+#endif
+           !Density
+           uin(:,j,k,1)=rho
+           !Momentum
+           uin(:,j,k,2)=rho*u
+           !Total energy
+           uin(:,j,k,5)=half*rho*u**2+P/gammam1
+#if MPI==1
+        endif
+#endif
+        
+     end do
+  end do
+  close(1)
+
+  !Add 1K localized perturbation at all levels (following 2012 J.Cho's paper)
+  if (perturb) then
+     do k=1,nz
+        do j=1,ny
+           do i=1,nx              
+              if (y(j)<0.) then
+                 Tprime=0.d0
+              else
+                 if (eeq) then
+                    Tprime=cosh(3.d0*2.d0*pi*(x(i)-xmin)/(xmax-xmin))*cosh(6.d0*(pi/2.d0*y(j)/ymax-pi/4.d0))
+                 else
+                    Tprime=cosh(3.d0*2.d0*pi*(x(i)-xmin)/(xmax-xmin))*cosh(6.d0*(pi/2.d0*y(j)/ymax+pi/4.d0))
+                 endif
+                 Tprime=3.d0/Tprime**2
+              endif
+              uin(i,j,k,5)=uin(i,j,k,5)+uin(i,j,k,1)*k_mumh*Tprime
+           end do
+        end do
+     end do
+  endif
+
+  return
+end subroutine condinit
+!===============================================================================
+!> Compute equilibrium temperature for Newtonian forcing
+!===============================================================================
+subroutine getTeq(Teq,x,y,z,pressure)
+  use precision
+  implicit none
+  real(dp), intent(in )::pressure,x,y,z
+  real(dp), intent(out)::Teq
+  return
+end subroutine getTeq
+!===============================================================================
+!> Compute radiative timescale for Newtonian forcing
+!===============================================================================
+subroutine getTauRad(oneOverTrad,pressure)
+  use precision
+  implicit none
+  real(dp), intent(in )::pressure
+  real(dp), intent(out)::oneOverTrad
+  return
+end subroutine getTauRad
+!===============================================================================
+!> Compute jet velocity from position
+!===============================================================================
+subroutine getU(x,y,Ujet)
+  use precision
+  implicit none
+  real(dp) :: x,y,Ujet
+  return
+end subroutine getU
+!====================================================================
+!  numerical recipes random number generator ran2
+!    requires input seed value=iseed
+!    returns real random number=rvalue
+!    Also updates iseed for next call 
+!
+subroutine ran2(iseed,rvalue)
+     
+      integer iseed
+      real rvalue
+      integer idum,IM1,IM2,IMM1,IA1,IA2,IQ1,IQ2,IR1,IR2,NTAB,NDIV
+      real AM,EPS,RNMX
+      parameter (IM1=2147483563,IM2=2147483399,AM=1./IM1,IMM1=IM1-1,&
+               & IA1=40014,IA2=40692,IQ1=53668,IQ2=52774,IR1=12211,&
+               & IR2=3791,NTAB=32,NDIV=1+IMM1/NTAB,EPS=1.2e-7,RNMX=1.-EPS)
+      integer idum2,jj,kk,iv(NTAB),iy
+      data idum2/123456789/, iv/NTAB*0/, iy/0/
+!
+      idum=iseed
+      if (idum.le.0) then
+        idum=max(-idum,1)
+        idum2=idum
+        do 11 jj=NTAB+8,1,-1
+          kk=idum/IQ1
+          idum=IA1*(idum-kk*IQ1)-kk*IR1
+          if (idum.lt.0) idum=idum+IM1
+          if (jj.le.NTAB) iv(jj)=idum
+11      continue
+        iy=iv(1)
+      endif
+      kk=idum/IQ1
+      idum=IA1*(idum-kk*IQ1)-kk*IR1
+      if (idum.lt.0) idum=idum+IM1
+      kk=idum2/IQ2
+      idum2=IA2*(idum2-kk*IQ2)-kk*IR2
+      if (idum2.lt.0) idum2=idum2+IM2
+      jj=1+iy/NDIV
+      iy=iv(jj)-idum2
+      iv(jj)=idum
+      if(iy.lt.1)iy=iy+IMM1
+      rvalue=min(AM*iy,RNMX)
+      iseed=idum
+      return
+end subroutine ran2
+!====================================================================
+!====================================================================
+!====================================================================
+subroutine legendre(LMAX,X,P,dP)
+!
+! Subroutine to generate Legendre polynomials P_L(X)
+! for L = 0,1,...,LMAX with given X.
+!
+  implicit none
+  integer, intent (IN) :: LMAX
+  integer :: L
+  real, intent (IN) :: X
+  real, intent (OUT), dimension (0:LMAX) :: P,dP
+!
+  P(0) = 1.0 ; dP(0) = 0.0
+  P(1) = X   ; dP(1) = 1.0
+  do L = 1, LMAX-1
+     P(L+1) = ((2.0*L+1)*X* P(L)         -L* P(L-1))/(L+1)
+    dP(L+1) = ((2.0*L+1)  *(P(L)+X*dP(L))-L*dP(L-1))/(L+1)
+  end do
+end subroutine legendre
+!====================================================================
+!====================================================================
+!====================================================================
+subroutine GetInterpolated(zloc,floc,z,func,n)
+  use precision
+  implicit none
+  integer :: n
+  real(dp) :: zloc,floc
+  real(dp), dimension(n) :: z,func
+
+  integer :: k
+  real(dp) :: z0,f0,df,dz
+
+  k=1
+  do while (z(k)<zloc)
+     k=k+1
+  end do
+  f0=func(k) ; z0=z(k)
+  df=func(k+1)-func(k)
+  dz=z(k+1)-z(k)
+  floc=f0+(zloc-z0)*df/dz
+
+  return
+end subroutine GetInterpolated

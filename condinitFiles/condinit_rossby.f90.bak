@@ -1,0 +1,264 @@
+!> \file platm/condinit.f90
+!! \brief
+!! \b DUMSES-Hybrid:
+!! This is the initial conditions subroutine for rossby wave test and 
+!! forced barotrop jet.
+!! \author
+!! Marc Joos <marc.joos@cea.fr>, Sébastien Fromang, Romain Teyssier, 
+!! Patrick Hennebelle
+!! \copyright
+!! Copyrights 2013-2015, CEA.
+!! This file is distributed under the CeCILL-A & GNU/GPL licenses, see
+!! <http://www.cecill.info/licences/Licence_CeCILL_V2.1-en.html> and
+!! <http://www.gnu.org/licenses/>
+!! \date
+!! \b created:          05-26-2015 
+!! \b last \b modified: 05-26-2015
+!<
+!===============================================================================
+!> setup the initial conditions for rossby wave test and forced barotrop jet 
+!===============================================================================
+subroutine condinit(mype)
+  use variables
+  use params
+  use const
+  use atmosphere
+#if MPI==1
+  use mpi
+#endif
+  implicit none
+
+  integer, intent(in) :: mype
+  !
+  integer :: nxwave,nywave
+  real(dp) :: amp
+  logical :: matsuno
+  namelist /init_params/ rho0,P0,amp,beta,drag,t_drag,t_rad,forcing,Q0,B0,lytherm,matsuno,vpert,forcing_jet,cooling,deep,U0,U1
+  !
+  integer  :: i,j,k,l,ifile,jfile,iseed
+  real(dp) :: u,v,drho,vpert
+  real(dp) :: vx,pressure,H,Rp,K0,gammam1,kwave,lwave,phiwave,Teq,Umax,Ujet
+  real :: rvalue
+  !
+  ! Calculate the initial state for uin...
+  ! uin   (1:nvector,iu1:iu2,ju1:ju2,ku1:ku2,1:nvar)
+  ! uin = (\rho, \rho vx, \rho vy, \rho vz, Etot, bx, by, bz)
+
+  ! Default input parameters
+  rho0=1.d0
+  P0=1.d0
+  U0=0.d0
+  beta=0.d0
+  omegaEq=0.d0
+  g=0.d0
+  lytherm=1.d0
+  matsuno=.true.
+  vpert=0.d0
+
+  ! Rossby wave properties
+  amp=1.d-6 ! Wave amplitude
+
+  balanced=.false.   ! Balanced vs. unbalanced scheme
+  isentropic=.false. ! Isotherme vs. adiabatic atm structure
+  cooling=.false.    ! Using cooling function?
+  drag=.false.       ! Using Rayleigh drag?
+
+  !Shallow water runs
+  forcing=.false.    ! Matsuno-like forcing (1966)
+  Q0=0.d0            ! Forcing amplitude
+  B0=0.d0            ! B-field amplitude
+
+  open(unit=1,file='input',status='old')
+  read(1,init_params)
+  close(1)
+
+  ! Barotrop jet runs
+  k_mumh=3779.
+
+  uin=0.d0
+  gammam1=gamma-1
+
+  iseed=1
+
+  ! Free wave case: read data from file (isothermal wave)
+  if (.not.(forcing)) then
+     if (matsuno) then
+        open(unit=1,file='eigendata.txt',status='old')
+        do j=1,ny
+           do i=1,nx
+              read(1,*) ifile,jfile,u,v,drho
+              !Density
+              uin(i,j,:,1)=rho0+amp*drho
+              !Momentum
+              uin(i,j,:,2)=uin(i,j,:,1)*amp*u
+              uin(i,j,:,3)=uin(i,j,:,1)*amp*v
+              !Total energy
+              uin(i,j,:,5)=5.d-1*(uin(i,j,:,2)**2+uin(i,j,:,3)**2)/uin(i,j,:,1)+half*uin(i,j,:,1)**2/(gamma-1.d0)
+           end do
+        end do
+     else
+        do j=1,ny
+           do i=1,nx
+              !Density
+              !rho0=4.e-4+1.e-4*cos(2.*pi*x(i)/(xmax-xmin))*exp(-y(j)**2/2./lytherm**2)
+              uin(i,j,:,1)=rho0
+              !Momentum
+              call getU(x(i),y(j),Ujet)
+              call ran2(iseed,rvalue)
+              uin(i,j,:,2)=uin(i,j,:,1)*(Ujet+(rvalue-0.5)*vpert)
+              call ran2(iseed,rvalue)
+              uin(i,j,:,3)=uin(i,j,:,1)*(rvalue-0.5)*vpert
+              !Total energy
+              !call getTeq(Teq,x(i),y(j),z(0),2.d3)
+              !P0=rho0*k_mumh*Teq
+              call getU(x(i),0.d0,Umax)
+              pressure= P0 + rho0*beta*lytherm**2*(Ujet-Umax)
+              uin(i,j,:,5)=5.d-1*(uin(i,j,:,2)**2+uin(i,j,:,3)**2)/uin(i,j,:,1)+pressure/(gamma-1.d0)
+           end do
+        end do
+     endif
+  endif
+
+  ! Forced case (WARNING: nonisothermal case)
+  if (forcing) then
+     !Density
+     uin(:,:,:,1)=rho0
+     !Total energy (B-field not included in formula below...).
+     uin(:,:,:,5)=5.d-1*(uin(:,:,:,2)**2+uin(:,:,:,3)**2)/uin(:,:,:,1)+half*uin(:,:,:,1)**2/(gamma-1.d0)
+     !Magnetic field (do I really understand what I am doing here?)
+     uin(:,:,:,7)=B0
+     uin(:,:,:,10)=B0
+  endif
+
+  return
+end subroutine condinit
+!===============================================================================
+!> Compute equatorial jet velocity
+!===============================================================================
+subroutine getU(x,y,Ujet)
+  use params
+  use atmosphere
+  implicit none
+  real(dp) :: x,y,Ujet
+  Ujet=(U0+U1*cos(2.*pi*x/(xmax-xmin)))*exp(-y**2/2.d0/lytherm**2)
+  return
+end subroutine getU
+!===============================================================================
+!> Compute equilibrium temperature for Newtonian forcing
+!===============================================================================
+subroutine getTeq(Teq,x,y,z,pressure)
+  use precision
+  use atmosphere , only : k_mumh,beta,lytherm,rho0,P0
+  implicit none
+  real(dp), intent(in )::pressure,x,y,z
+  real(dp), intent(out)::Teq
+  real(dp) :: Ujet,Umax,Ploc
+  call getU(x,y,Ujet) ; call getU(x,0.d0,Umax)
+  Ploc = P0 + rho0*beta*lytherm**2*(Ujet-Umax)
+  Teq=Ploc/k_mumh/rho0
+  return
+end subroutine getTeq
+!===============================================================================
+!> Compute radiative timescale for Newtonian forcing
+!===============================================================================
+subroutine getTauRad(oneOverTrad,pressure)
+  use precision
+  use atmosphere , only: coolSimple,t_rad
+  implicit none
+  real(dp), intent(in )::pressure
+  real(dp), intent(out)::oneOverTrad
+  oneOverTrad=1.d0/1.d4
+  return
+end subroutine getTauRad
+!====================================================================
+!====================================================================
+!====================================================================
+!====================================================================
+!  numerical recipes random number generator ran2
+!    requires input seed value=iseed
+!    returns real random number=rvalue
+!    Also updates iseed for next call 
+!
+subroutine ran2(iseed,rvalue)
+     
+      integer iseed
+      real rvalue
+      integer idum,IM1,IM2,IMM1,IA1,IA2,IQ1,IQ2,IR1,IR2,NTAB,NDIV
+      real AM,EPS,RNMX
+      parameter (IM1=2147483563,IM2=2147483399,AM=1./IM1,IMM1=IM1-1,&
+               & IA1=40014,IA2=40692,IQ1=53668,IQ2=52774,IR1=12211,&
+               & IR2=3791,NTAB=32,NDIV=1+IMM1/NTAB,EPS=1.2e-7,RNMX=1.-EPS)
+      integer idum2,jj,kk,iv(NTAB),iy
+      data idum2/123456789/, iv/NTAB*0/, iy/0/
+!
+      idum=iseed
+      if (idum.le.0) then
+        idum=max(-idum,1)
+        idum2=idum
+        do 11 jj=NTAB+8,1,-1
+          kk=idum/IQ1
+          idum=IA1*(idum-kk*IQ1)-kk*IR1
+          if (idum.lt.0) idum=idum+IM1
+          if (jj.le.NTAB) iv(jj)=idum
+11      continue
+        iy=iv(1)
+      endif
+      kk=idum/IQ1
+      idum=IA1*(idum-kk*IQ1)-kk*IR1
+      if (idum.lt.0) idum=idum+IM1
+      kk=idum2/IQ2
+      idum2=IA2*(idum2-kk*IQ2)-kk*IR2
+      if (idum2.lt.0) idum2=idum2+IM2
+      jj=1+iy/NDIV
+      iy=iv(jj)-idum2
+      iv(jj)=idum
+      if(iy.lt.1)iy=iy+IMM1
+      rvalue=min(AM*iy,RNMX)
+      iseed=idum
+      return
+end subroutine ran2
+!===============================================================================
+!> Compute Legendre polynomial
+!===============================================================================
+subroutine legendre(LMAX,X,P,dP)
+!
+! Subroutine to generate Legendre polynomials P_L(X)
+! for L = 0,1,...,LMAX with given X.
+!
+  implicit none
+  integer, intent (IN) :: LMAX
+  integer :: L
+  real, intent (IN) :: X
+  real, intent (OUT), dimension (0:LMAX) :: P,dP
+!
+  P(0) = 1.0 ; dP(0) = 0.0
+  P(1) = X   ; dP(1) = 1.0
+  do L = 1, LMAX-1
+     P(L+1) = ((2.0*L+1)*X* P(L)         -L* P(L-1))/(L+1)
+    dP(L+1) = ((2.0*L+1)  *(P(L)+X*dP(L))-L*dP(L-1))/(L+1)
+  end do
+end subroutine legendre
+!===============================================================================
+!> Linear interpolation at a point given a collection of function
+!===============================================================================
+subroutine GetInterpolated(zloc,floc,z,func,n)
+  use precision
+  implicit none
+  integer :: n
+  real(dp) :: zloc,floc
+  real(dp), dimension(n) :: z,func
+
+  integer :: k
+  real(dp) :: z0,f0,df,dz
+
+  k=1
+  do while (z(k)<zloc)
+     k=k+1
+  end do
+  f0=func(k) ; z0=z(k)
+  df=func(k+1)-func(k)
+  dz=z(k+1)-z(k)
+  floc=f0+(zloc-z0)*df/dz
+
+  return
+end subroutine GetInterpolated

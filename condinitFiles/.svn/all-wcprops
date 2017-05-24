@@ -1,0 +1,47 @@
+K 25
+svn:wc:ra_dav:version-url
+V 90
+/svn/coast/!svn/ver/3861/dumses_mpi/branches/dumses_hybrid/src/problem/platm/condinitFiles
+END
+condinit_test.f90.bak
+K 25
+svn:wc:ra_dav:version-url
+V 112
+/svn/coast/!svn/ver/3870/dumses_mpi/branches/dumses_hybrid/src/problem/platm/condinitFiles/condinit_test.f90.bak
+END
+condinit_rossby.f90.bak
+K 25
+svn:wc:ra_dav:version-url
+V 114
+/svn/coast/!svn/ver/3870/dumses_mpi/branches/dumses_hybrid/src/problem/platm/condinitFiles/condinit_rossby.f90.bak
+END
+condinit_jcho.f90.bak
+K 25
+svn:wc:ra_dav:version-url
+V 112
+/svn/coast/!svn/ver/3870/dumses_mpi/branches/dumses_hybrid/src/problem/platm/condinitFiles/condinit_jcho.f90.bak
+END
+condinit_vortex.f90.bak
+K 25
+svn:wc:ra_dav:version-url
+V 114
+/svn/coast/!svn/ver/3870/dumses_mpi/branches/dumses_hybrid/src/problem/platm/condinitFiles/condinit_vortex.f90.bak
+END
+condinit_hotjup.f90.bak
+K 25
+svn:wc:ra_dav:version-url
+V 114
+/svn/coast/!svn/ver/3870/dumses_mpi/branches/dumses_hybrid/src/problem/platm/condinitFiles/condinit_hotjup.f90.bak
+END
+input_deepjup
+K 25
+svn:wc:ra_dav:version-url
+V 104
+/svn/coast/!svn/ver/3870/dumses_mpi/branches/dumses_hybrid/src/problem/platm/condinitFiles/input_deepjup
+END
+condinit_deepjup.f90.bak
+K 25
+svn:wc:ra_dav:version-url
+V 115
+/svn/coast/!svn/ver/3870/dumses_mpi/branches/dumses_hybrid/src/problem/platm/condinitFiles/condinit_deepjup.f90.bak
+END

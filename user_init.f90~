@@ -1,0 +1,255 @@
+!===============================================================================
+!> \file user_init.f90
+!! \brief
+!! \b DUMSES-Hybrid:
+!! This is user's initialization subroutines for problem platm.
+!! \details
+!! Contains user_init(), get_eta(), get_csq(), get_P(), get_E()
+!! \author
+!! Marc Joos <marc.joos@cea.fr>, Sébastien Fromang, Romain Teyssier, 
+!! Patrick Hennebelle
+!! \copyright
+!! Copyrights 2013-2015, CEA.
+!! This file is distributed under the CeCILL-A & GNU/GPL licenses, see
+!! <http://www.cecill.info/licences/Licence_CeCILL_V2.1-en.html> and
+!! <http://www.gnu.org/licenses/>
+!! \date
+!! \b created:          09-06-2014
+!! \b last \b modified: 09-06-2015
+!<
+!===============================================================================
+!> User initialization
+!===============================================================================
+subroutine user_init
+  use params
+  use variables , only : gravin,x,z
+  use atmosphere
+  implicit none
+
+  integer :: i,j,k,l,ipos,idim
+  integer :: ilo,ihi,jlo,jhi,klo,khi
+  real(dp) :: xc,yc,phic,dist
+  real(dp), dimension(2,ndim) :: phi
+
+  ! Set rhs variables (.true. when there are source terms)
+  rhs = .true.
+
+  !Compute gravin array
+  ilo = min(1,iu1+1) ; ihi = max(1,iu2-1)
+  jlo = min(1,ju1+1) ; jhi = max(1,ju2-1)
+  klo = min(1,ku1+1) ; khi = max(1,ku2-1)
+
+  gravin=0.d0 ; phi=0.d0
+  do k=klo,khi
+     do j=jlo,jhi
+        do i=ilo,ihi
+
+           if (ndim==3) then
+              phi(2,3)=g*z(k+1)
+              phi(1,3)=g*z(k-1)
+           else if (ndim==1) then
+              phi(2,1)=g*x(i+1)
+              phi(1,1)=g*x(i-1)
+           endif
+
+           !First coordinate gravity force
+           gravin(i,j,k,1)=-half*(phi(2,1)-phi(1,1))/dx
+           !Second coordinate gravity force
+           if (ndim>1) gravin(i,j,k,2)=-half*(phi(2,2)-phi(1,2))/dy
+           !Third coordinate gravity force
+           if (ndim>2) gravin(i,j,k,3)=-half*(phi(2,3)-phi(1,3))/dz
+
+        end do
+     end do
+  end do
+
+  return
+end subroutine user_init
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+subroutine get_eta(etaVal,i,j,k,iemf,energy)
+  use params
+  use variables , only : uin,z
+  use atmosphere , only : k_mumh,Pcrit
+  implicit none
+  integer :: i,j,k,iemf
+  logical :: energy
+  real(dp) :: etaVal
+
+  !local constants
+  real(dp),parameter :: eta0=2.3d-2 !resistivity (in SI units) for a 1K temperature with x_e=1 (from Balbus)
+  real(dp),parameter :: xe0=1.55d+7 !normalizing factor for xe (following Perna et al.)
+  real(dp),parameter :: mh=1.67d-27 !hydrogen mass
+  real(dp),parameter :: T0=25188    !Normalizing temperature in the exponential
+  real(dp),parameter :: etaCap=1.d10 !Cap on resistivity
+
+  !local variables
+  real(dp)::rho,rhovx,rhovy,rhovz,E,Bxc,Byc,Bzc,T,csq,n_n,xe,pressure
+
+  !Compute Temperature
+  rho=uin(i,j,k,1) ; E=uin(i,j,k,5)
+  rhovx=uin(i,j,k,2) ; rhovy=uin(i,j,k,3) ; rhovz=uin(i,j,k,4) 
+  Bxc=5.d-1*(uin(i,j,k,6)+uin(i+1,j,k,6))
+  Byc=5.d-1*(uin(i,j,k,7)+uin(i,j+1,k,7))
+  Bzc=5.d-1*(uin(i,j,k,8)+uin(i,j,k+1,8))
+  call get_csq(rho,rhovx,rhovy,rhovz,E,Bxc,Byc,Bzc,gamma,csq) !Alternatively, call ctoprim...
+  T=csq/gamma/k_mumh
+  
+  !Compute n_n (in SI units)
+  n_n=rho/2.d0/mh !2.d0 stands for mu
+  
+  !Compute xe
+  xe=xe0*T**0.75/n_n**0.5*exp(-T0/T)
+  
+  ! Space & time variables resisitivity
+  if (eta==1.d0) then
+     etaVal=eta0*sqrt(T)/xe !resistivity as a function of T and local ionization fraction
+  else
+     etaVal=eta !Uniform diffusivity case
+  endif
+
+  ! Vanishing resistivity in the atmosphere (P<Pcrit)
+  call get_P(rho,rhovx,rhovy,rhovz,E,Bxc,Byc,Bzc,gamma,pressure)
+  if (pressure<Pcrit) etaval=0.d0
+
+  ! Apply cap on resistivity (eta<etaCap)
+  etaval=min(etaVal,etaCap)
+
+  return
+end subroutine get_eta
+!===============================================================================
+!> Compute sound speed squared from conserved quantities
+!===============================================================================
+subroutine get_csq(rho,rhovx,rhovy,rhovz,E,Bxc,Byc,Bzc,gamma,csq)
+  use const
+  use params , only : smallc
+  implicit none
+  real(dp) , intent(in ) :: rho,rhovx,rhovy,rhovz,E,Bxc,Byc,Bzc,gamma
+  real(dp) , intent(out) :: csq
+
+  real(dp) :: Ec,Em
+
+  Ec=half*(rhovx*rhovx+rhovy*rhovy+rhovz*rhovz)/rho
+  Em=half*(Bxc*Bxc+Byc*Byc+Bzc*Bzc)
+
+  csq=gamma*(gamma-1.d0)*(E-Ec-Em)/rho
+  csq=max(csq,smallc*smallc)
+  
+  return
+end subroutine get_csq
+!===============================================================================
+!> Compute thermal pressure from conserved quantities
+!===============================================================================
+subroutine get_P(rho,rhovx,rhovy,rhovz,E,Bxc,Byc,Bzc,gamma,p)
+  use const
+  implicit none
+  real(dp) , intent(in ) :: rho,rhovx,rhovy,rhovz,E,Bxc,Byc,Bzc,gamma
+  real(dp) , intent(out) :: p
+
+  real(dp) :: Ec,Em
+
+  Ec=half*(rhovx*rhovx+rhovy*rhovy+rhovz*rhovz)/rho
+  Em=half*(Bxc*Bxc+Byc*Byc+Bzc*Bzc)
+
+  p=(gamma-1.d0)*(E-Ec-Em)
+  
+  return
+end subroutine get_P
+!===============================================================================
+!> Compute total energy from other conserved quantities
+!===============================================================================
+subroutine get_E(rho,rhovx,rhovy,rhovz,E,Bxc,Byc,Bzc,gamma,csq)
+  use const
+  implicit none
+  real(dp) , intent(in ) :: rho,rhovx,rhovy,rhovz,Bxc,Byc,Bzc,gamma,csq
+  real(dp) , intent(out) :: E
+
+  real(dp) :: Ec,Em
+
+  Ec=half*(rhovx*rhovx+rhovy*rhovy+rhovz*rhovz)/rho
+  Em=half*(Bxc*Bxc+Byc*Byc+Bzc*Bzc)
+
+  E=rho*csq/gamma/(gamma-1.)+Ec+Em
+
+  return
+end subroutine get_E
+!===============================================================================
+!> Interpolate density to cell faces according to hydrostatic equilibrium
+!===============================================================================
+subroutine getRhoFaces(r,p,rm,rp,gamma,x)
+  use precision
+  use atmosphere
+  implicit none
+
+  real(dp), intent(in ) :: r,p,gamma,x
+  real(dp), intent(out) :: rm,rp
+
+  !local variables
+  real(dp) :: Ki,gammam1,H
+
+  if (isentropic) then
+
+     Ki=p/r**gamma ; gammam1=gamma-1.d0
+
+     ! Right state at left interface
+     rp = ((p/r+gammam1/gamma*g*x)/Ki)**(1.d0/gammam1)
+
+     ! Left state at right interface
+     rm = ((p/r-gammam1/gamma*g*x)/Ki)**(1.d0/gammam1)
+
+  else
+
+     !Get local cell scaleheight
+     H=p/r/g
+
+     ! Right state at left interface
+     rp = r*exp(+x/H)
+
+     ! Left state at right interface
+     rm = r*exp(-x/H)
+
+  endif
+
+  return
+end subroutine getRhoFaces
+!===============================================================================
+!> Interpolate pressure to cell faces according to hydrostatic equilibrium
+!===============================================================================
+subroutine getPressureFaces(r,p,pm,pp,gamma,x)
+  use precision
+  use atmosphere
+  implicit none
+
+  real(dp), intent(in ) :: r,p,gamma,x
+  real(dp), intent(out) :: pm,pp
+
+  !local variables
+  real(dp) :: Ki,gammam1,H
+
+  if (isentropic) then
+
+     Ki=p/r**gamma ; gammam1=gamma-1.d0
+
+     ! Right state at left interface
+     pp = ((p/r+gammam1/gamma*g*x))**(gamma/gammam1)/Ki**(1.d0/gammam1)
+
+     ! Left state at right interface
+     pm = ((p/r-gammam1/gamma*g*x))**(gamma/gammam1)/Ki**(1.d0/gammam1)
+
+   else
+
+      !Get local cell scaleheight
+      H=p/r/g
+
+      ! Right state at left interface
+      pp = p*exp(+x/H)
+
+      ! Left state at right interface
+      pm = p*exp(-x/H)
+
+   endif
+
+  return
+end subroutine getPressureFaces

@@ -1,0 +1,55 @@
+&start_params
+	restart = 12
+       ,tlim    = 299200.d3
+       ,verbose = .false.
+       ,debug   = .false.
+       /
+
+&scheme_params
+	bdtypex    = 'periodic'
+       ,bdtypey    = 'analytic'
+       ,bdtypez    = 'analytic'
+       ,riemann    = 'hlld'
+       ,riemann2d  = 'hlld'
+       ,slope_type = 2
+       ,courant    = 0.5
+       /
+
+&model_params
+	nx     = 128
+       ,ny     = 195
+       ,nz     = 48
+       ,xmin   = -3.14d8
+       ,xmax   = +3.14d8
+       ,ymin   = -1.75d8
+       ,ymax   = +1.75d8
+       ,zmin   = 0.d0
+       ,zmax   = 9.d6
+       ,gamma  = 1.4
+       /
+
+&output_params
+	dthist  = 1.d4
+       ,dtdump  = 299200d0
+       ,io_type = 'pnetcdf'
+	/
+
+&mpi_params
+	nxslice = 32
+       ,nyslice = 1
+       ,nzslice = 8
+	/
+
+&init_params
+	balanced=.true.
+       ,isentropic=.true.
+       ,beta=4.2d-13
+       ,cooling=.true.
+       ,DT_EP=400.e0
+       ,lytherm=0.7d8
+    	/
+
+&restart_params
+	B0 = 10.d-3
+	addmag=.true.
+        /

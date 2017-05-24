@@ -1,0 +1,59 @@
+!===============================================================================
+!> \file user_restart.f90
+!! \brief
+!! \b DUMSES-Hybrid:
+!! This is user's restart subroutines.
+!! \details
+!! Contains user_restart()
+!! \author
+!! Marc Joos <marc.joos@cea.fr>, Sébastien Fromang, Romain Teyssier, 
+!! Patrick Hennebelle
+!! \copyright
+!! Copyrights 2013-2015, CEA.
+!! This file is distributed under the CeCILL-A & GNU/GPL licenses, see
+!! <http://www.cecill.info/licences/Licence_CeCILL_V2.1-en.html> and
+!! <http://www.gnu.org/licenses/>
+!! \date
+!! \b created:          06-22-2015
+!! \b last \b modified: 06-22-2015
+!<
+!===============================================================================
+!> User customization at restart
+!===============================================================================
+subroutine user_restart
+  use precision
+  use params
+  use variables
+  implicit none
+
+  integer :: k, j, i
+  real(dp) :: B0,  H, Tsurf=1800., k_mumh=3779.,  g=8.d0, pressure
+  logical :: addmag
+  namelist /restart_params/addmag,B0
+
+  !Add B-field
+  addmag=.false.
+  open(unit=1,file='input' ,status='old')
+  read(1,restart_params)
+  close(1)
+
+  if (addmag) then
+     uin(:,:,:,7     )=B0
+     uin(:,:,:,nvar+2)=B0
+  endif
+
+  H = k_mumh*Tsurf/g
+
+  if (addmag) then
+   do k=ku1,ku2
+     do j=ju1,ju2
+        do i=iu1,iu2
+           pressure=k_mumh*uin(i,j,k,1)*Tsurf
+           uin(i,j,k,5) = pressure/(gamma-1.) + B0**2/2.d0            
+        end do
+     end do
+    end do
+  endif
+
+  return
+end subroutine user_restart

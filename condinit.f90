@@ -1,0 +1,346 @@
+!> \file platm/condinit.f90
+!! \brief
+!! \b DUMSES-Hybrid:
+!! This is the initial conditions subroutine for a deep hot Jupiter
+!! atmosphere
+!! \author
+!! Marc Joos <marc.joos@cea.fr>, Sébastien Fromang, Romain Teyssier, 
+!! Patrick Hennebelle
+!! \copyright
+!! Copyrights 2013-2015, CEA.
+!! This file is distributed under the CeCILL-A & GNU/GPL licenses, see
+!! <http://www.cecill.info/licences/Licence_CeCILL_V2.1-en.html> and
+!! <http://www.gnu.org/licenses/>
+!! \date
+!! \b created:          05-26-2015 
+!! \b last \b modified: 05-26-2015
+!<
+!===============================================================================
+!> setup the initial conditions for a deep hot Jupiter atmosphere
+!===============================================================================
+subroutine condinit
+  use variables
+  use params
+  use mpi_var
+  use atmosphere
+#if WITHMPI==1
+  use mpi
+#endif
+  implicit none
+
+  real(dp) :: amp
+  namelist /init_params/ amp,g,balanced,isentropic,cooling,drag,DT_EP,beta,B0,Psurf,lytherm,Pcrit,coolSimple,Tsurf,sponge,zbuffer,eta_buffer,eta_body
+  !
+  integer  :: i,j,k,l,iseed
+  real(dp) :: pressure,H,Rp,K0,gammam1,Temp,Tempm1,Tempmhalf,alpha,pm1,pmhalf,rhomhalf
+  real :: rvalue
+#if WITHMPI==1
+  integer :: status(MPI_STATUS_SIZE)
+  integer :: ierr
+#endif
+
+  !Default input parameters
+  amp=1.d0
+  g=1.d1    ! in m.s-2
+  Rp=xmin   ! ==1
+  balanced=.false. ! balanced vs. unbalanced scheme
+  isentropic=.false. !isotherme vs. adiabatic atm structure
+  cooling=.false.
+  wave=0.d0 ! Wave amplitude (in the velocity, only relevant for isentropic case)
+  DT_EP=0.d0 !Amplitude of horizontal temperature difference due to radiative forcing
+  beta=0.d0 !Gradient of the Coriolis term
+  omegaEq=0.d0 !Absolute Coriolis parameter
+  drag=.false. !using Rayleigh drag?
+  t_drag=0.d0 ! Drag damping timescale
+  lyTherm=0.35d8 !Meridional size of thermal forcing
+  coolSimple=.false. !Idealized cooling (isothermal atmosphere+coskx+constant DT+constant taurad)
+  t_rad=1.e4 !In seconds, for idealized cooling
+  sponge=.false. !To disable sponge layer
+  zbuffer=zmax   !Lower position of the buffer layer (by default set to "no buffer")
+
+  ! deep hot jupiter
+  deep=.true. ! Logical variable to switch to deep cooling function
+  k_mumh=3779.! For T=1K & mu=32 & mh=1.67e-27 kg & k in USI
+  Psurf=2.2d7  ! Bottom level pressure (default: Psurf=220 bar)
+  Tsurf=1800. ! Initial uniform temperature (default: Tsurf=1800 K)
+  Rp=1.e8     ! Planet radius (in meters)
+  g=8.d0      ! Planet gravity field (in m.s-2)
+  B0=0.d0     !Initial B-field (units to be determined)
+  Pcrit=1.e2  !Critical pressure in Pa
+  eta_buffer=1.d10 !resistivity in the resitive layer
+  eta_body=0.d0 !resitivity in the rest 
+
+  open(unit=1,file='input' ,status='old')
+  read(1,init_params)
+  close(1)
+
+  rho0=Psurf/Tsurf/k_mumh ! Bottom level density
+  H=k_mumh*Tsurf/g        ! Bottom level scale height
+
+  if (mype==0) then
+     write (*,*) ''
+     write (*,*) 'sound speed (in m.s-1)=',sqrt(gamma*Psurf/rho0)
+     write (*,*) 'H (in km)=',H/1e3
+     write (*,*) 'P0 (in bars)=',Psurf/1.e5
+     write (*,*) ''
+  endif
+
+  uin=0.d0
+  iseed=mype
+  gammam1=gamma-1
+
+  !Density
+  if (ndim==3) then
+     do k=1,nz
+        uin(:,:,k,1)=rho0*max(exp(-(z(k)-zmin)/H),exp(-(zbuffer-zmin)/H))
+     end do
+  endif
+
+  !Momentum
+  do k=ku1,ku2
+     do j=ju1,ju2
+        do i=iu1,iu2
+           !Momentum (Random condition)
+           call ran2(iseed,rvalue)
+           uin(i,j,k,2) = uin(i,j,k,1)*amp*(rvalue-0.5)*sqrt(ciso**2)
+           call ran2(iseed,rvalue)
+           uin(i,j,k,4) = uin(i,j,k,1)*amp*(rvalue-0.5)*sqrt(ciso**2)
+           call ran2(iseed,rvalue)
+           uin(i,j,k,3) = uin(i,j,k,1)*amp*(rvalue-0.5)*sqrt(ciso**2)
+           !Magnetic field
+           uin(i,j,k,6:nvar+3)=0.d0
+           if (z(k)<zbuffer) then
+              uin(i,j,k,7)=B0 ; uin(i,j,k,10)=B0
+           endif
+        end do
+     end do
+  end do
+
+  !B-field
+  do k=ku1,ku2
+     do j=ju1,ju2
+        do i=iu1,iu2
+           !Magnetic field
+           pressure=k_mumh*uin(i,j,k,1)*Tsurf
+           if (pressure>Pcrit) then
+              uin(i,j,k,7)=B0 ; uin(i,j,k,10)=B0
+           endif
+        end do
+     end do
+  end do
+
+  !Total energy
+  do k=ku1,ku2
+     do j=ju1,ju2
+        do i=iu1,iu2
+           pressure=k_mumh*uin(i,j,k,1)*Tsurf
+           uin(i,j,k,5) = pressure/(gamma-1.) + B0**2/2.d0             
+        end do
+     end do
+  end do
+
+  return
+end subroutine condinit
+!===============================================================================
+!> Compute equilibrium temperature for Newtonian forcing
+!===============================================================================
+subroutine getTeq(Teq,x,y,z,pressure)
+  use const
+  use params , only : xmin,xmax,ymin,ymax,zmin
+  use atmosphere , only : DT_EP,lyTherm,coolSimple,Tsurf,zbuffer
+  implicit none
+  real(dp), intent(in )::pressure,x,y,z
+  real(dp), intent(out)::Teq
+  !Fit coefficients
+  real(dp),dimension(4)::Tval,logPval
+  !Local variables
+  real(dp)::logP,Tnight,Tday,Tnight4,Tday4,xsize,DeltaT,Peqtop,logPeqtop
+  !Fit values
+  Tval= (/ 8.d2,1.1d3,1.8d3,3.d3 /)
+  logPval= (/ 1.d-6,1.d-2,1.d1,2.2d2 /) ; logPval=log10(logPval*1.e5)
+  Peqtop=1.d-2 ; logPeqtop=log10(Peqtop*1.e5) !Peqtop is in bar
+  !Derive Teq
+  if (coolSimple) then
+     ! Very simple, shallow water like Teq
+     !Teq=Tsurf+DT_EP*cos(2.d0*pi*x/(xmax-xmin))*exp(-y**2/2./lytherm**2)
+     ! Heng-like Teq but isothermal, use 1/4-exponent law
+     Tnight=Tsurf ; Tday=Tsurf+2.d0*DT_EP
+     xsize=xmax-xmin
+     if (abs(x)>0.25*xsize) then
+        Teq=Tnight
+     else
+        Tnight4=Tnight**4 ; Tday4=Tday**4
+        Teq=Tnight4+(Tday4-Tnight4)*cos(2.d0*pi*x/(xmax-xmin))*exp(-y**2/2./lytherm**2)
+        Teq=Teq**0.25
+     endif
+  else
+     logP=log10(pressure)
+     ! Compute pressure varying DT
+     if (logP<logPeqtop) DeltaT=DT_EP
+     if ((logP>logPeqtop).and.(logP<logPval(3))) DeltaT=DT_EP*(logP-logPval(3))/(logPeqtop-logPval(3))
+     if (logP>logPval(3)) DeltaT=0.d0
+     ! Compute pressure varying Teq
+     if (logP<logPval(2)) then
+        Teq=Tval(2)-(Tval(2)-Tval(1))*(logPval(2)-logP)/(logPval(2)-logPval(1))
+        Teq=max(Teq,1.d3)
+        !Tnight=Teq ; Tday=Teq+DT_EP
+     endif
+     if ((logP<logPval(3)).and.(logP>logPval(2))) then
+        Teq=Tval(3)-(Tval(3)-Tval(2))*(logPval(3)-logP)/(logPval(3)-logPval(2))
+        !Tnight=Teq-DT_EP ; Tday=Teq+DT_EP
+     endif
+     if (logP>logPval(3)) then
+        Teq=Tval(3)
+        !Teq=Tval(4)-(Tval(4)-Tval(3))*(logPval(4)-logP)/(logPval(4)-logPval(3))
+        !Tnight=Teq ; Tday=Teq
+     endif
+     ! Longitudinal modulation to account for irradiation
+     xsize=xmax-xmin
+     if (z<zbuffer) then
+        if (abs(x)>0.25*xsize) then
+           Teq=Teq-DeltaT
+        else
+           ! First paper forcing (Fromang et al. 2016)
+           !        Tnight4=Tnight**4 ; Tday4=Tday**4
+           !        Teq=Tnight4+(Tday4-Tnight4)*cos(2.d0*pi*x/(xmax-xmin))*exp(-y**2/2./lytherm**2) !lytherm=0.1*ysize in early runs.
+           !        Teq=Teq**0.25
+           ! Adopt simpler forcing (a la Liu & Showman)
+           Teq=Teq-DeltaT+2.d0*DeltaT*cos(2.d0*pi*x/(xmax-xmin))*exp(-y**2/2./lytherm**2)
+        endif
+     endif
+  endif
+  return
+end subroutine getTeq
+!===============================================================================
+!> Compute radiative timescale for Newtonian forcing
+!===============================================================================
+subroutine getTauRad(oneOverTrad,pressure)
+  use precision
+  use atmosphere , only: coolSimple,t_rad
+  implicit none
+  real(dp), intent(in )::pressure
+  real(dp), intent(out)::oneOverTrad
+  !Fit coefficients
+  real(dp),dimension(3)::logTauVal,logPval
+  !Local variables
+  real(dp)::logP,tau
+  !Fit coefficients
+  logTauVal= (/ 2.5,5.0,7.5 /)
+  logPval= (/ 1.d-6,1.d0,1.d1 /) ; logPval=log10(logPval*1.e5)
+  !Derive t_rad
+  logP=log10(pressure)
+  if (logP<logPval(2)) then
+     tau=logTauVal(2)-(logTauVal(2)-logTauVal(1))*(logPval(2)-logP)/(logPval(2)-logPval(1))
+     oneOverTrad=10.d0**(-tau)
+  endif
+  if (logP>logPval(2)) then
+     tau=logTauVal(3)-(logTauVal(3)-logTauVal(2))*(logPval(3)-logP)/(logPval(3)-logPval(2))
+     oneOverTrad=10.d0**(-tau)
+  endif
+  if (logP>logPval(3)) then
+     tau=logTauVal(3)
+     oneOverTrad=10.d0**(-tau)
+  endif
+  return
+end subroutine getTauRad
+!===============================================================================
+!> Compute jet velocity from position
+!===============================================================================
+subroutine getU(x,y,Ujet)
+  use const
+  use params , only : xmin,xmax
+  use atmosphere
+  implicit none
+  real(dp) :: x,y,Ujet
+  Ujet=(U0+U1*cos(2.*pi*x/(xmax-xmin)))*exp(-y**2/2.d0/lytherm**2)
+  return
+end subroutine getU
+!====================================================================
+!  numerical recipes random number generator ran2
+!    requires input seed value=iseed
+!    returns real random number=rvalue
+!    Also updates iseed for next call 
+!
+subroutine ran2(iseed,rvalue)
+     
+      integer iseed
+      real rvalue
+      integer idum,IM1,IM2,IMM1,IA1,IA2,IQ1,IQ2,IR1,IR2,NTAB,NDIV
+      real AM,EPS,RNMX
+      parameter (IM1=2147483563,IM2=2147483399,AM=1./IM1,IMM1=IM1-1,&
+               & IA1=40014,IA2=40692,IQ1=53668,IQ2=52774,IR1=12211,&
+               & IR2=3791,NTAB=32,NDIV=1+IMM1/NTAB,EPS=1.2e-7,RNMX=1.-EPS)
+      integer idum2,jj,kk,iv(NTAB),iy
+      data idum2/123456789/, iv/NTAB*0/, iy/0/
+!
+      idum=iseed
+      if (idum.le.0) then
+        idum=max(-idum,1)
+        idum2=idum
+        do 11 jj=NTAB+8,1,-1
+          kk=idum/IQ1
+          idum=IA1*(idum-kk*IQ1)-kk*IR1
+          if (idum.lt.0) idum=idum+IM1
+          if (jj.le.NTAB) iv(jj)=idum
+11      continue
+        iy=iv(1)
+      endif
+      kk=idum/IQ1
+      idum=IA1*(idum-kk*IQ1)-kk*IR1
+      if (idum.lt.0) idum=idum+IM1
+      kk=idum2/IQ2
+      idum2=IA2*(idum2-kk*IQ2)-kk*IR2
+      if (idum2.lt.0) idum2=idum2+IM2
+      jj=1+iy/NDIV
+      iy=iv(jj)-idum2
+      iv(jj)=idum
+      if(iy.lt.1)iy=iy+IMM1
+      rvalue=min(AM*iy,RNMX)
+      iseed=idum
+      return
+end subroutine ran2
+!===============================================================================
+!> Compute Legendre polynomial
+!===============================================================================
+subroutine legendre(LMAX,X,P,dP)
+!
+! Subroutine to generate Legendre polynomials P_L(X)
+! for L = 0,1,...,LMAX with given X.
+!
+  implicit none
+  integer, intent (IN) :: LMAX
+  integer :: L
+  real, intent (IN) :: X
+  real, intent (OUT), dimension (0:LMAX) :: P,dP
+!
+  P(0) = 1.0 ; dP(0) = 0.0
+  P(1) = X   ; dP(1) = 1.0
+  do L = 1, LMAX-1
+     P(L+1) = ((2.0*L+1)*X* P(L)         -L* P(L-1))/(L+1)
+    dP(L+1) = ((2.0*L+1)  *(P(L)+X*dP(L))-L*dP(L-1))/(L+1)
+  end do
+end subroutine legendre
+!===============================================================================
+!> Linear interpolation at a point given a collection of function
+!===============================================================================
+subroutine GetInterpolated(zloc,floc,z,func,n)
+  use precision
+  implicit none
+  integer :: n
+  real(dp) :: zloc,floc
+  real(dp), dimension(n) :: z,func
+
+  integer :: k
+  real(dp) :: z0,f0,df,dz
+
+  k=1
+  do while (z(k)<zloc)
+     k=k+1
+  end do
+  f0=func(k) ; z0=z(k)
+  df=func(k+1)-func(k)
+  dz=z(k+1)-z(k)
+  floc=f0+(zloc-z0)*df/dz
+
+  return
+end subroutine GetInterpolated

@@ -1,0 +1,245 @@
+!> \file platm/condinit.f90
+!! \brief
+!! \b DUMSES-Hybrid:
+!! This is the initial conditions subroutine for a uniform density vortex
+!! \author
+!! Marc Joos <marc.joos@cea.fr>, Sébastien Fromang, Romain Teyssier, 
+!! Patrick Hennebelle
+!! \copyright
+!! Copyrights 2013-2015, CEA.
+!! This file is distributed under the CeCILL-A & GNU/GPL licenses, see
+!! <http://www.cecill.info/licences/Licence_CeCILL_V2.1-en.html> and
+!! <http://www.gnu.org/licenses/>
+!! \date
+!! \b created:          03-10-2013 
+!! \b last \b modified: 18-06-2015
+!<
+!===============================================================================
+!> setup the initial conditions for a uniform density vortex
+!> Based on test problem by Audusse et al., 2009, JCP, 228, 2934 
+!> Aimed at testing Coriolis force implementation
+!===============================================================================
+subroutine condinit
+  use variables
+  use params
+  use atmosphere
+  use mpi_var
+#if MPI==1
+  use mpi
+#endif
+  implicit none
+
+  real(dp) :: amp,vortexRadius,alpha
+  namelist /init_params/ rho0,amp,P0,vortexRadius,alpha,omegaEq
+  !
+  integer  :: i,j,k,l,iseed
+  real(dp) :: pressure,Ekin,H,Rp,K0,gammam1,r,vtheta,alpha2
+  real :: rvalue
+
+  !Default parameters
+  rho0=1.d0
+  P0=1.d0
+  vortexRadius=1.d0
+  beta=0.d0
+  omegaEq=0.d0
+  g=0.d0
+
+  open(unit=1,file='input' ,status='old')
+  read(1,init_params)
+  close(1)
+
+  if (mype==0) then
+     write (*,*) 'sound speed (in m.s-1)=',sqrt(gamma*P0/rho0)
+     write (*,*) 'H (in km)=',H/1e3
+     write (*,*) 'P0 (in bars)=',P0/1.e5
+  endif
+
+  uin=0.d0
+  iseed=mype
+  gammam1=gamma-1
+
+  !Density
+  do k=ku1,ku2
+     do i=iu1,iu2
+        uin(i,:,k,1)=rho0
+     end do
+  end do
+
+  !Momentum & B-field
+  do k=ku1,ku2
+     do j=ju1,ju2
+        do i=iu1,iu2
+
+           r=sqrt(x(i)**2+y(j)**2) ; vtheta=0.d0
+           if (r<vortexRadius) vtheta=alpha*r
+           if ((r>=vortexRadius).and.(r<2.*vortexRadius)) vtheta=alpha*(2.d0*vortexRadius-r)
+           uin(i,j,k,2) = - uin(i,j,k,1)*vtheta*y(j)/r
+           uin(i,j,k,3) = + uin(i,j,k,1)*vtheta*x(i)/r
+
+           !Momentum (add random velocities)
+           call ran2(iseed,rvalue)
+           uin(i,j,k,2) = uin(i,j,k,2) + uin(i,j,k,1)*amp*(rvalue-0.5)*sqrt(ciso**2)
+           call ran2(iseed,rvalue)
+           uin(i,j,k,3) = uin(i,j,k,3) + uin(i,j,k,1)*amp*(rvalue-0.5)*sqrt(ciso**2)
+           call ran2(iseed,rvalue)
+           uin(i,j,k,4) = uin(i,j,k,4) + uin(i,j,k,1)*amp*(rvalue-0.5)*sqrt(ciso**2)
+
+           !Magnetic field
+           uin(i,j,k,6:nvar+3)=0.d0
+
+        end do
+     end do
+  end do
+
+  !Total energy
+  alpha2=alpha*alpha
+  do k=ku1,ku2
+     do j=ju1,ju2
+        do i=iu1,iu2
+
+           !Internal energy part
+           r=sqrt(x(i)**2+y(j)**2)
+           if (r<vortexRadius) then
+              pressure = P0 + half*alpha2*(r*r-vortexRadius**2) &
+                   + alpha*omegaEq*(r*r-vortexRadius**2) &
+                   - 1.5d0*alpha*(alpha-2.d0*omegaEq)*vortexRadius**2 &
+                   + 4.0d0*alpha*(alpha-     omegaEq)*vortexRadius**2 &
+                   - 4.d0*alpha2*vortexRadius**2*alog(2.)
+           elseif ((r>=vortexRadius).and.(r<2.*vortexRadius)) then
+              pressure = P0 + 4.d0*alpha2*vortexRadius**2*alog(real(r/2./vortexRadius)) &
+                   + half*alpha*(alpha-2.d0*omegaEq)*(r*r-4.d0*vortexRadius**2) &
+                   - 4.d0*alpha*vortexRadius*(alpha-omegaEq)*(r-2.d0*vortexRadius)
+           else
+              pressure = P0
+           endif
+
+           !Kinetic energy part
+           Ekin=half*(uin(i,j,k,2)**2+uin(i,j,k,3)**2+uin(i,j,k,4)**2)/uin(i,j,k,1)
+
+           !Total energy
+           uin(i,j,k,5) = Ekin + pressure/(gamma-1.)
+
+        end do
+     end do
+  end do
+
+  return
+end subroutine condinit
+!===============================================================================
+!> Compute equatorial jet velocity
+!===============================================================================
+subroutine getU(x,y,Ujet)
+  use params
+  implicit none
+  real(dp) :: x,y,Ujet
+  return
+end subroutine getU
+!===============================================================================
+!> Compute equilibrium temperature for Newtonian forcing
+!===============================================================================
+subroutine getTeq(Teq,x,y,z,pressure)
+  use precision
+  implicit none
+  real(dp), intent(in )::pressure,x,y,z
+  real(dp), intent(out)::Teq
+  return
+end subroutine getTeq
+!===============================================================================
+!> Compute radiative timescale for Newtonian forcing
+!===============================================================================
+subroutine getTauRad(oneOverTrad,pressure)
+  use precision
+  implicit none
+  real(dp), intent(in )::pressure
+  real(dp), intent(out)::oneOverTrad
+  return
+end subroutine getTauRad
+!====================================================================
+!  numerical recipes random number generator ran2
+!    requires input seed value=iseed
+!    returns real random number=rvalue
+!    Also updates iseed for next call 
+!
+subroutine ran2(iseed,rvalue)
+     
+      integer iseed
+      real rvalue
+      integer idum,IM1,IM2,IMM1,IA1,IA2,IQ1,IQ2,IR1,IR2,NTAB,NDIV
+      real AM,EPS,RNMX
+      parameter (IM1=2147483563,IM2=2147483399,AM=1./IM1,IMM1=IM1-1,&
+               & IA1=40014,IA2=40692,IQ1=53668,IQ2=52774,IR1=12211,&
+               & IR2=3791,NTAB=32,NDIV=1+IMM1/NTAB,EPS=1.2e-7,RNMX=1.-EPS)
+      integer idum2,jj,kk,iv(NTAB),iy
+      data idum2/123456789/, iv/NTAB*0/, iy/0/
+!
+      idum=iseed
+      if (idum.le.0) then
+        idum=max(-idum,1)
+        idum2=idum
+        do 11 jj=NTAB+8,1,-1
+          kk=idum/IQ1
+          idum=IA1*(idum-kk*IQ1)-kk*IR1
+          if (idum.lt.0) idum=idum+IM1
+          if (jj.le.NTAB) iv(jj)=idum
+11      continue
+        iy=iv(1)
+      endif
+      kk=idum/IQ1
+      idum=IA1*(idum-kk*IQ1)-kk*IR1
+      if (idum.lt.0) idum=idum+IM1
+      kk=idum2/IQ2
+      idum2=IA2*(idum2-kk*IQ2)-kk*IR2
+      if (idum2.lt.0) idum2=idum2+IM2
+      jj=1+iy/NDIV
+      iy=iv(jj)-idum2
+      iv(jj)=idum
+      if(iy.lt.1)iy=iy+IMM1
+      rvalue=min(AM*iy,RNMX)
+      iseed=idum
+      return
+end subroutine ran2
+!====================================================================
+!====================================================================
+!====================================================================
+subroutine legendre(LMAX,X,P,dP)
+!
+! Subroutine to generate Legendre polynomials P_L(X)
+! for L = 0,1,...,LMAX with given X.
+!
+  implicit none
+  integer, intent (IN) :: LMAX
+  integer :: L
+  real, intent (IN) :: X
+  real, intent (OUT), dimension (0:LMAX) :: P,dP
+!
+  P(0) = 1.0 ; dP(0) = 0.0
+  P(1) = X   ; dP(1) = 1.0
+  do L = 1, LMAX-1
+     P(L+1) = ((2.0*L+1)*X* P(L)         -L* P(L-1))/(L+1)
+    dP(L+1) = ((2.0*L+1)  *(P(L)+X*dP(L))-L*dP(L-1))/(L+1)
+  end do
+end subroutine legendre
+!====================================================================
+!====================================================================
+!====================================================================
+subroutine GetInterpolated(zloc,floc,z,func,n)
+  use precision
+  implicit none
+  integer :: n
+  real(dp) :: zloc,floc
+  real(dp), dimension(n) :: z,func
+
+  integer :: k
+  real(dp) :: z0,f0,df,dz
+
+  k=1
+  do while (z(k)<zloc)
+     k=k+1
+  end do
+  f0=func(k) ; z0=z(k)
+  df=func(k+1)-func(k)
+  dz=z(k+1)-z(k)
+  floc=f0+(zloc-z0)*df/dz
+
+  return
+end subroutine GetInterpolated
